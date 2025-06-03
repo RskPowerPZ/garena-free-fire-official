@@ -7,23 +7,22 @@ import requests
 import urllib3
 import os
 import concurrent.futures
-import random
-import time
 from google.protobuf.json_format import MessageToJson
 import uid_generator_pb2
 import like_count_pb2
+import time
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
-app.logger.setLevel("INFO")  # Reduced from DEBUG to avoid verbose logs
+app.logger.setLevel("DEBUG")
 
-# Ultra-Safe Configuration
-MAX_WORKERS = 8             # Conservative concurrency
-VISITS_PER_TOKEN = 2        # Very safe limit for guest accounts
-REQUEST_TIMEOUT = 8         # Balanced timeout
-DELAY_BETWEEN_BATCHES = 0.5 # Small delay to prevent flooding
-MAX_TOKENS_PER_REQUEST = 50 # Process only 350 of 440 tokens for safety
+# Optimized Configuration
+MAX_WORKERS = 15  # Increased concurrency
+MAX_RETRIES = 2   # Reduced retries to save time
+REQUEST_TIMEOUT = 5  # Faster timeout
+VISITS_PER_TOKEN = 3  # Reduced from 5 to process more tokens
+SAFETY_MARGIN = 5  # Seconds to finish before Vercel's 60s timeout
 
 @app.route("/")
 def health():
@@ -44,86 +43,18 @@ def load_tokens(region):
 
         with open(fname, "r") as f:
             tokens = json.load(f)
-            random.shuffle(tokens)  # Distribute load randomly
-            return tokens[:MAX_TOKENS_PER_REQUEST]  # Safety limit
-        
+            # Shuffle tokens to distribute load
+            import random
+            random.shuffle(tokens)
+            return tokens
     except Exception as e:
         app.logger.error(f"Token load error: {e}")
         return None
 
-def encrypt_message(plaintext):
-    try:
-        key = b'Yg&tc%DEuh6%Zc^8'
-        iv = b'6oyZDr22E3ychjM%'
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        padded_message = pad(plaintext, AES.block_size)
-        encrypted_message = cipher.encrypt(padded_message)
-        return binascii.hexlify(encrypted_message).decode('utf-8')
-    except Exception as e:
-        app.logger.error(f"Encryption error: {e}")
-        return None
+# [Keep all other helper functions the same as previous solution]
 
-def create_protobuf(uid):
-    try:
-        message = uid_generator_pb2.uid_generator()
-        message.saturn_ = int(uid)
-        message.garena = 1
-        return message.SerializeToString()
-    except Exception as e:
-        app.logger.error(f"Protobuf creation error: {e}")
-        return None
-
-def enc(uid):
-    protobuf_data = create_protobuf(uid)
-    if protobuf_data is None:
-        return None
-    return encrypt_message(protobuf_data)
-
-def make_safe_request(encrypt, region, token):
-    """Extra-safe request function with built-in delays"""
-    try:
-        time.sleep(random.uniform(0.1, 0.3))  # Random delay between requests
-        
-        if region == "IND":
-            url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
-        elif region in {"BR", "US", "SAC", "NA"}:
-            url = "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
-        else:
-            url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
-
-        edata = bytes.fromhex(encrypt)
-        headers = {
-            'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            'Connection': "Keep-Alive",
-            'Accept-Encoding': "gzip",
-            'Authorization': f"Bearer {token}",
-            'Content-Type': "application/x-www-form-urlencoded",
-            'Expect': "100-continue",
-            'X-Unity-Version': "2018.4.11f1",
-            'X-GA': "v1 1",
-            'ReleaseVersion': "OB49"
-        }
-
-        response = requests.post(
-            url, 
-            data=edata, 
-            headers=headers, 
-            verify=False, 
-            timeout=REQUEST_TIMEOUT
-        )
-        
-        if response.status_code == 429:  # Rate limit detected
-            time.sleep(2)  # Back off if rate limited
-            return None
-            
-        return response if response.status_code == 200 else None
-
-    except Exception as e:
-        app.logger.warning(f"Request failed (safe mode): {str(e)[:100]}")  # Truncated error
-        return None
-
-@app.route('/safe-mass-visit', methods=['GET'])
-def safe_mass_visit():
+@app.route('/visit', methods=['GET'])
+def visit():
     start_time = time.time()
     target_uid = request.args.get("uid")
     region = request.args.get("region", "").upper()
@@ -132,72 +63,69 @@ def safe_mass_visit():
         return jsonify({"error": "UID and region are required"}), 400
 
     try:
-        # Load and shuffle tokens
         tokens = load_tokens(region)
         if not tokens:
-            raise Exception("Failed to load tokens (safe mode)")
-        
+            raise Exception("Failed to load tokens")
+
         encrypted_target_uid = enc(target_uid)
         if encrypted_target_uid is None:
-            raise Exception("Encryption failed (safe mode)")
+            raise Exception("Encryption failed")
 
-        # Calculate expected visits (350 tokens × 3 visits = 1050)
-        expected_visits = len(tokens) * VISITS_PER_TOKEN
+        # Calculate max tokens we can process within time limit
+        max_possible_tokens = min(50, len(tokens))  # Process up to 50 tokens
+        tokens = tokens[:max_possible_tokens]
+        
+        total_visits = len(tokens) * VISITS_PER_TOKEN
         success_count = 0
         player_name = None
+        processed_count = 0
 
-        # Process in batches with delays
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
-            
             for token in tokens:
+                # Check time remaining
+                elapsed = time.time() - start_time
+                if elapsed > (60 - SAFETY_MARGIN):
+                    app.logger.warning(f"Stopping early due to time constraints. Processed {processed_count}/{len(tokens)} tokens")
+                    break
+                    
                 for _ in range(VISITS_PER_TOKEN):
-                    if time.time() - start_time > 50:  # Stay under 60s limit
-                        app.logger.info("Stopping early to avoid timeout")
-                        break
-                        
                     futures.append(
                         executor.submit(
-                            make_safe_request,
+                            make_request,
                             encrypted_target_uid,
                             region,
                             token['token']
                         )
                     )
-                time.sleep(DELAY_BETWEEN_BATCHES)  # Small delay between tokens
+                processed_count += 1
 
-            # Process results
             for future in concurrent.futures.as_completed(futures):
                 try:
                     result = future.result()
                     if result:
                         success_count += 1
-                        protobuf_data = decode_protobuf(result.content)
-                        if protobuf_data and not player_name:
-                            jsone = MessageToJson(protobuf_data)
+                        if not player_name:
+                            jsone = MessageToJson(result)
                             player_name = json.loads(jsone).get('AccountInfo', {}).get('PlayerNickname', '')
                 except Exception as e:
-                    app.logger.warning(f"Safe result processing error: {str(e)[:100]}")
+                    app.logger.error(f"Future error: {e}")
 
-        failed_count = expected_visits - success_count
+        failed_count = total_visits - success_count
 
         return jsonify({
-            "TotalExpectedVisits": expected_visits,
+            "TotalVisits": total_visits,
             "SuccessfulVisits": success_count,
             "FailedVisits": failed_count,
             "PlayerNickname": player_name,
             "UID": int(target_uid),
-            "TokensUsed": len(tokens),
+            "TokensUsed": processed_count,
             "TimeElapsed": round(time.time() - start_time, 2),
-            "Note": "Ultra-safe mode: 350 tokens × 3 visits each"
+            "Note": f"Processed {processed_count} tokens with {VISITS_PER_TOKEN} visits each"
         })
-
     except Exception as e:
-        app.logger.error(f"Safe mass visit failed: {str(e)[:200]}")
-        return jsonify({
-            "error": "Safe processing error",
-            "details": str(e)[:200]  # Truncated error
-        }), 500
+        app.logger.error(f"/visit failed: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=False)  # Disable debug mode for production
+    app.run(debug=True)
