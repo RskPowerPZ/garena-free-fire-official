@@ -3,34 +3,40 @@ import json
 import binascii
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-import aiohttp
-import asyncio
+import requests
 import urllib3
-from datetime import datetime, timedelta
 import os
 import threading
-from functools import lru_cache
-import time
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from google.protobuf.json_format import MessageToJson
 import uid_generator_pb2
 import like_count_pb2
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 app = Flask(__name__)
+app.logger.setLevel("DEBUG")
+
+@app.route("/")
+def health():
+    return "Server is running!"
 
 def load_tokens(region):
     try:
-        if region == "IND":
-            with open("token_ind.json", "r") as f:
-                tokens = json.load(f)
-        elif region in {"BR", "US", "SAC", "NA"}:
-            with open("token_br.json", "r") as f:
-                tokens = json.load(f)
-        else:
-            with open("token_bd.json", "r") as f:
-                tokens = json.load(f)
-        return tokens
+        fname = {
+            "IND": "token_ind.json",
+            "BR": "token_br.json",
+            "US": "token_br.json",
+            "SAC": "token_br.json",
+            "NA": "token_br.json",
+        }.get(region, "token_bd.json")
+
+        if not os.path.exists(fname):
+            raise FileNotFoundError(f"Missing token file: {fname}")
+
+        with open(fname, "r") as f:
+            return json.load(f)
     except Exception as e:
+        app.logger.error(f"Token load error: {e}")
         return None
 
 def encrypt_message(plaintext):
@@ -42,6 +48,7 @@ def encrypt_message(plaintext):
         encrypted_message = cipher.encrypt(padded_message)
         return binascii.hexlify(encrypted_message).decode('utf-8')
     except Exception as e:
+        app.logger.error(f"Encryption error: {e}")
         return None
 
 def create_protobuf(uid):
@@ -51,16 +58,16 @@ def create_protobuf(uid):
         message.garena = 1
         return message.SerializeToString()
     except Exception as e:
+        app.logger.error(f"Protobuf creation error: {e}")
         return None
 
 def enc(uid):
     protobuf_data = create_protobuf(uid)
     if protobuf_data is None:
         return None
-    encrypted_uid = encrypt_message(protobuf_data)
-    return encrypted_uid
+    return encrypt_message(protobuf_data)
 
-def make_request_threaded(encrypt, region, token, session, results, index):
+def make_request_threaded(encrypt, region, token, results, index):
     try:
         if region == "IND":
             url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
@@ -68,7 +75,7 @@ def make_request_threaded(encrypt, region, token, session, results, index):
             url = "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
         else:
             url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
-            
+
         edata = bytes.fromhex(encrypt)
         headers = {
             'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
@@ -81,14 +88,14 @@ def make_request_threaded(encrypt, region, token, session, results, index):
             'X-GA': "v1 1",
             'ReleaseVersion': "OB49"
         }
-        
-        with session.post(url, data=edata, headers=headers, ssl=False, timeout=5) as response:
-            if response.status != 200:
-                results[index] = None
-            else:
-                binary = response.read()
-                results[index] = decode_protobuf(binary)
+
+        response = requests.post(url, data=edata, headers=headers, verify=False, timeout=5)
+        if response.status_code != 200:
+            results[index] = None
+        else:
+            results[index] = decode_protobuf(response.content)
     except Exception as e:
+        app.logger.error(f"Threaded request error: {e}")
         results[index] = None
 
 def decode_protobuf(binary):
@@ -97,67 +104,60 @@ def decode_protobuf(binary):
         items.ParseFromString(binary)
         return items
     except Exception as e:
+        app.logger.error(f"Protobuf decode error: {e}")
         return None
 
 @app.route('/visit', methods=['GET'])
-async def visit():
+def visit():
     target_uid = request.args.get("uid")
     region = request.args.get("region", "").upper()
-    
+
     if not all([target_uid, region]):
         return jsonify({"error": "UID and region are required"}), 400
-        
+
     try:
         tokens = load_tokens(region)
-        if tokens is None:
-            raise Exception("Failed to load tokens.")
-            
+        if not tokens:
+            raise Exception("Failed to load tokens")
+
         encrypted_target_uid = enc(target_uid)
         if encrypted_target_uid is None:
-            raise Exception("Encryption of target UID failed.")
-            
+            raise Exception("Encryption failed")
+
         total_visits = len(tokens) * 20
-        success_count = 0
-        failed_count = 0
+        results = [None] * total_visits
+        threads = []
+
+        for i, token in enumerate(tokens):
+            for j in range(20):
+                idx = i * 20 + j
+                t = threading.Thread(target=make_request_threaded, args=(encrypted_target_uid, region, token['token'], results, idx))
+                threads.append(t)
+                t.start()
+
+        for t in threads:
+            t.join()
+
+        success_count = sum(1 for r in results if r)
+        failed_count = total_visits - success_count
         player_name = None
-        total_responses = []
-        
-        async with aiohttp.ClientSession() as session:
-            results = [None] * (len(tokens) * 20)
-            threads = []
-            for i, token in enumerate(tokens):
-                for j in range(20):
-                    thread = threading.Thread(target=make_request_threaded, args=(encrypted_target_uid, region, token['token'], session, results, i * 20 + j))
-                    threads.append(thread)
-                    thread.start()
-            
-            for thread in threads:
-                thread.join()
-            
-            for info in results:
-                total_responses.append(info)
-                if info:
-                    if not player_name:
-                        jsone = MessageToJson(info)
-                        data_info = json.loads(jsone)
-                        player_name = data_info.get('AccountInfo', {}).get('PlayerNickname', '')
-                    success_count += 1
-                else:
-                    failed_count += 1
-                
-        summary = {
+
+        for r in results:
+            if r and not player_name:
+                jsone = MessageToJson(r)
+                player_name = json.loads(jsone).get('AccountInfo', {}).get('PlayerNickname', '')
+
+        return jsonify({
             "TotalVisits": total_visits,
             "SuccessfulVisits": success_count,
             "FailedVisits": failed_count,
             "PlayerNickname": player_name,
             "UID": int(target_uid),
-            "TotalResponses": total_responses
-        }
-        
-        return jsonify(summary)
-        
+        })
+
     except Exception as e:
+        app.logger.error(f"/visit failed: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, use_reloader=False)
+    app.run(debug=True)
