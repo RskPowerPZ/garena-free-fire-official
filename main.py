@@ -20,7 +20,7 @@ app.logger.setLevel("INFO")  # Reduced from DEBUG to avoid verbose logs
 
 # Ultra-Safe Configuration
 MAX_WORKERS = 8             # Conservative concurrency
-VISITS_PER_TOKEN = 3        # Very safe limit for guest accounts
+VISITS_PER_TOKEN = 2        # Very safe limit for guest accounts
 REQUEST_TIMEOUT = 8         # Balanced timeout
 DELAY_BETWEEN_BATCHES = 0.5 # Small delay to prevent flooding
 MAX_TOKENS_PER_REQUEST = 350 # Process only 350 of 440 tokens for safety
