@@ -23,7 +23,7 @@ MAX_WORKERS = 8             # Conservative concurrency
 VISITS_PER_TOKEN = 2        # Very safe limit for guest accounts
 REQUEST_TIMEOUT = 8         # Balanced timeout
 DELAY_BETWEEN_BATCHES = 0.5 # Small delay to prevent flooding
-MAX_TOKENS_PER_REQUEST = 150 # Process only 350 of 440 tokens for safety
+MAX_TOKENS_PER_REQUEST = 50 # Process only 350 of 440 tokens for safety
 
 @app.route("/")
 def health():
