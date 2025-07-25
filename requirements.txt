@@ -1,0 +1,6 @@
+Flask==2.3.3
+aiohttp==3.9.5
+requests==2.32.3
+pycryptodome==3.20.0
+protobuf==4.25.3
+gunicorn==22.0.0
