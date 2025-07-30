@@ -44,38 +44,20 @@ def create_visit_protobuf(uid, region):
         app.logger.error(f"Error creating visit protobuf message: {e}")
         return None
 
-# Fetch tokens from all 5 JWT APIs
+# Fetch tokens from tokens.json file
 async def fetch_all_tokens():
-    urls = [
-        "https://free-fire-india-six.vercel.app/token",
-        "https://free-fire-india-five.vercel.app/token",
-        "https://free-fire-india-four.vercel.app/token",
-        "https://free-fire-india-tthree.vercel.app/token",
-        "team-x-rahul-jwt.vercel.app/token"
-    ]
-    all_tokens = []
     try:
-        async with aiohttp.ClientSession() as session:
-            tasks = [session.get(url) for url in urls]
-            responses = await asyncio.gather(*tasks, return_exceptions=True)
-            for response in responses:
-                if isinstance(response, Exception):
-                    app.logger.error(f"Error fetching token: {response}")
-                    continue
-                if response.status != 200:
-                    app.logger.error(f"Token API failed with status: {response.status}")
-                    continue
-                data = await response.json()
-                tokens = data.get("tokens", [])
-                if not tokens:
-                    app.logger.error("No tokens in this response.")
-                    continue
-                all_tokens.extend(tokens)
-        if len(all_tokens) < 100:
-            app.logger.warning(f"Only {len(all_tokens)} tokens fetched, expected 100.")
-        return all_tokens[:100]  # Limit to 100 tokens
+        with open('tokens.json', 'r') as file:
+            data = json.load(file)
+        tokens = data.get("tokens", [])
+        if not tokens:
+            app.logger.error("No tokens found in tokens.json.")
+            return None
+        if len(tokens) < 100:
+            app.logger.warning(f"Only {len(tokens)} tokens found in tokens.json, expected 100.")
+        return tokens[:100]  # Limit to 100 tokens
     except Exception as e:
-        app.logger.error(f"Error fetching tokens: {e}")
+        app.logger.error(f"Error reading tokens from tokens.json: {e}")
         return None
 
 # Get the appropriate URL for the server
@@ -209,10 +191,11 @@ def handle_visits():
     try:
         def process_request():
             # Fetch tokens synchronously for initial info
-            tokens_data = requests.get("https://free-fire-india-six.vercel.app/token").json()
+            with open('tokens.json', 'r') as file:
+                tokens_data = json.load(file)
             tokens_list = tokens_data.get("tokens", [])
             if not tokens_list:
-                raise Exception("No tokens received from JWT API.")
+                raise Exception("No tokens received from tokens.json.")
             token = tokens_list[0]
 
             encrypted_uid = encrypt_api("08" + Encrypt_ID(str(uid)) + "1801")
