@@ -47,9 +47,9 @@ def fetch_all_tokens():
         if not tokens:
             app.logger.error("No tokens found in tokens.json.")
             return None
-        if len(tokens) < 150:
+        if len(tokens) < 100:
             app.logger.warning(f"Only {len(tokens)} tokens found in tokens.json, expected 100.")
-        return tokens[:150]  # Limit to 100 tokens
+        return tokens[:100]  # Limit to 100 tokens
     except Exception as e:
         app.logger.error(f"Error reading tokens from tokens.json: {e}")
         return None
@@ -94,7 +94,7 @@ async def get_player_info(session, encrypt, server_name, token):
             "Expect": "100-continue",
             "X-Unity-Version": "2018.4.11f1",
             "X-GA": "v1 1",
-            "ReleaseVersion": "OB40"
+            "ReleaseVersion": "OB50"
         }
         async with session.post(url, data=edata, headers=headers, ssl=False) as response:
             if response.status == 200:
@@ -108,7 +108,7 @@ async def get_player_info(session, encrypt, server_name, token):
 # Send a single visit
 async def send_single_visit(session, url, token, data):
     headers = {
-        "ReleaseVersion": "OB49",
+        "ReleaseVersion": "OB50",
         "X-GA": "v1 1",
         "Authorization": f"Bearer {token}",
         "Host": url.replace("https://", "").split("/")[0]
@@ -161,7 +161,7 @@ async def send_visits_in_batches(uid, server_name, tokens, target_visits=1000):
     return total_success, total_sent, player_info, visit_process[0], total_time
 
 @app.route('/visit', methods=['GET'])
-async def handle_visits():
+def handle_visits():
     global api_requests_made
     uid = request.args.get("uid")
     server_name = request.args.get("region", "").upper()
@@ -178,7 +178,7 @@ async def handle_visits():
         return jsonify({"error": "API request limit exceeded"}), 429
 
     try:
-        async def process_request():
+        def process_request():
             # Fetch tokens synchronously for initial info
             tokens_list = fetch_all_tokens()
             if not tokens_list:
@@ -190,24 +190,26 @@ async def handle_visits():
                 raise Exception("Encryption of UID failed.")
 
             # Get player info before visits
-            async with aiohttp.ClientSession() as session:
-                before_info = await get_player_info(session, encrypted_uid, server_name, token)
-                if before_info is None:
-                    raise Exception("Failed to retrieve initial player info.")
-                before_visits = before_info.get("likes", 0)
+            async def get_initial_info():
+                async with aiohttp.ClientSession() as session:
+                    return await get_player_info(session, encrypted_uid, server_name, token)
+            before_info = asyncio.run(get_initial_info())
+            if before_info is None:
+                raise Exception("Failed to retrieve initial player info.")
+            before_visits = before_info.get("likes", 0)
 
-                # Fetch tokens for sending visits
-                tokens = fetch_all_tokens()
-                if not tokens or len(tokens) < 100:
-                    raise Exception(f"Failed to fetch 100 tokens, got {len(tokens) if tokens else 0}.")
+            # Fetch tokens for sending visits
+            tokens = fetch_all_tokens()
+            if not tokens or len(tokens) < 100:
+                raise Exception(f"Failed to fetch 100 tokens, got {len(tokens) if tokens else 0}.")
 
-                # Send 1000 visits
-                total_success, total_sent, player_info, visit_process, total_time = await send_visits_in_batches(
-                    uid, server_name, tokens, target_visits=1000
-                )
+            # Send 1000 visits
+            total_success, total_sent, player_info, visit_process, total_time = asyncio.run(
+                send_visits_in_batches(uid, server_name, tokens, target_visits=1000)
+            )
 
-                # Use player_info from visits to avoid redundant call
-                after_visits = player_info.get("likes", 0) if player_info else before_visits
+            # Use player_info from visits to avoid redundant call
+            after_visits = player_info.get("likes", 0) if player_info else before_visits
 
             visits_given = after_visits - before_visits
             status = 1 if visits_given > 0 else 2
@@ -234,7 +236,7 @@ async def handle_visits():
             }
             return result
 
-        result = await process_request()
+        result = process_request()
         return jsonify(result)
     except Exception as e:
         app.logger.error(f"Error processing request: {e}")
