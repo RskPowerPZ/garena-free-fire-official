@@ -1,13 +1,11 @@
 from flask import Flask, request, jsonify
 import asyncio
 import aiohttp
-import requests
 import json
 import time
 from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-from google.protobuf.json_format import MessageToJson
 import binascii
 from visit_count_pb2 import Info  # Assuming you have the protobuf for visits
 from byte import encrypt_api, Encrypt_ID  # Assuming these are your encryption utilities
@@ -20,7 +18,7 @@ API_KEY_EXPIRY = datetime(2026, 7, 25, 18, 0)  # Set to 1 year from now (July 25
 API_REQUEST_LIMIT = 9999
 api_requests_made = 0
 
-# Encrypt a protobuf message
+# Encrypt a message
 def encrypt_message(plaintext):
     try:
         key = b'Yg&tc%DEuh6%Zc^8'
@@ -33,29 +31,25 @@ def encrypt_message(plaintext):
         app.logger.error(f"Error encrypting message: {e}")
         return None
 
-# Create visit protobuf message
-def create_visit_protobuf(uid, region):
-    try:
-        message = Info()  # Adjust based on your visit_count_pb2 structure
-        message.AccountInfo.UID = int(uid)
-        message.AccountInfo.PlayerRegion = region
-        return message.SerializeToString()
-    except Exception as e:
-        app.logger.error(f"Error creating visit protobuf message: {e}")
-        return None
-
-# Fetch tokens from tokens.json file
-async def fetch_all_tokens():
+# Fetch tokens from tokens.json file (synchronous)
+def fetch_all_tokens():
     try:
         with open('tokens.json', 'r') as file:
             data = json.load(file)
-        tokens = data.get("tokens", [])
+        # Handle both list and dict formats
+        if isinstance(data, list):
+            tokens = data
+        elif isinstance(data, dict):
+            tokens = data.get("tokens", [])
+        else:
+            app.logger.error("Invalid tokens.json format: must be a list or dict with 'tokens' key.")
+            return None
         if not tokens:
             app.logger.error("No tokens found in tokens.json.")
             return None
-        if len(tokens) < 100:
+        if len(tokens) < 150:
             app.logger.warning(f"Only {len(tokens)} tokens found in tokens.json, expected 100.")
-        return tokens[:100]  # Limit to 100 tokens
+        return tokens[:150]  # Limit to 100 tokens
     except Exception as e:
         app.logger.error(f"Error reading tokens from tokens.json: {e}")
         return None
@@ -86,70 +80,8 @@ def parse_protobuf_response(response_data):
         app.logger.error(f"Protobuf parsing error: {e}")
         return None
 
-# Send a single visit
-async def send_single_visit(session, url, token, data):
-    headers = {
-        "ReleaseVersion": "OB49",
-        "X-GA": "v1 1",
-        "Authorization": f"Bearer {token}",
-        "Host": url.replace("https://", "").split("/")[0]
-    }
-    try:
-        async with session.post(url, headers=headers, data=data, ssl=False) as resp:
-            if resp.status == 200:
-                response_data = await resp.read()
-                return True, response_data
-            else:
-                return False, None
-    except Exception as e:
-        app.logger.error(f"Visit error: {e}")
-        return False, None
-
-# Send visits in batches to achieve 1000 visits
-async def send_visits_in_batches(uid, server_name, tokens, target_visits=1000):
-    url = get_url(server_name)
-    connector = aiohttp.TCPConnector(limit=0)
-    total_success = 0
-    total_sent = 0
-    first_success_response = None
-    player_info = None
-    visit_process = []
-    start_time = time.time()
-
-    async with aiohttp.ClientSession(connector=connector) as session:
-        encrypted = encrypt_api("08" + Encrypt_ID(str(uid)) + "1801")
-        data = bytes.fromhex(encrypted)
-
-        visits_per_token = target_visits // len(tokens)  # 1000 visits / 100 tokens = 10 visits per token
-        for i in range(0, len(tokens), 20):  # Process in batches of 20 tokens
-            batch_tokens = tokens[i:i+20]
-            batch_size = len(batch_tokens) * visits_per_token
-            tasks = []
-            for token in batch_tokens:
-                for _ in range(visits_per_token):
-                    tasks.append(send_single_visit(session, url, token, data))
-
-            results = await asyncio.gather(*tasks)
-            batch_success = sum(1 for success, _ in results if success)
-            total_success += batch_success
-            total_sent += len(tasks)
-
-            if first_success_response is None:
-                for success, response in results:
-                    if success and response is not None:
-                        first_success_response = response
-                        player_info = parse_protobuf_response(response)
-                        break
-
-            visit_process.append(f"{batch_success}+")
-            print(f"Batch sent: {len(tasks)}, Success in batch: {batch_success}, Total success: {total_success}")
-
-    end_time = time.time()
-    total_time = str(timedelta(seconds=int(end_time - start_time)))
-    return total_success, total_sent, player_info, "".join(visit_process)[:-1], total_time
-
-# Get player info before and after visits
-def get_player_info(encrypt, server_name, token):
+# Async get player info
+async def get_player_info(session, encrypt, server_name, token):
     try:
         url = get_url(server_name)
         edata = bytes.fromhex(encrypt)
@@ -162,17 +94,74 @@ def get_player_info(encrypt, server_name, token):
             "Expect": "100-continue",
             "X-Unity-Version": "2018.4.11f1",
             "X-GA": "v1 1",
-            "ReleaseVersion": "OB49"
+            "ReleaseVersion": "OB40"
         }
-        response = requests.post(url, data=edata, headers=headers, verify=False)
-        binary = response.content
-        return parse_protobuf_response(binary)
+        async with session.post(url, data=edata, headers=headers, ssl=False) as response:
+            if response.status == 200:
+                binary = await response.read()
+                return parse_protobuf_response(binary)
+            return None
     except Exception as e:
         app.logger.error(f"Error in get_player_info: {e}")
         return None
 
+# Send a single visit
+async def send_single_visit(session, url, token, data):
+    headers = {
+        "ReleaseVersion": "OB49",
+        "X-GA": "v1 1",
+        "Authorization": f"Bearer {token}",
+        "Host": url.replace("https://", "").split("/")[0]
+    }
+    try:
+        async with session.post(url, headers=headers, data=data, ssl=False) as resp:
+            if resp.status == 200:
+                return True, await resp.read()
+            return False, None
+    except Exception:
+        return False, None
+
+# Send visits in a single batch
+async def send_visits_in_batches(uid, server_name, tokens, target_visits=1000):
+    url = get_url(server_name)
+    connector = aiohttp.TCPConnector(limit=100)  # Explicitly set high connection limit
+    total_success = 0
+    total_sent = 0
+    first_success_response = None
+    player_info = None
+    visit_process = []
+    start_time = time.time()
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        encrypted = encrypt_api("08" + Encrypt_ID(str(uid)) + "1801")
+        if not encrypted:
+            return 0, 0, None, "", "0:00:00"
+        data = bytes.fromhex(encrypted)
+
+        visits_per_token = target_visits // len(tokens)  # 1000 visits / 100 tokens = 10 visits per token
+        tasks = []
+        for token in tokens:
+            for _ in range(visits_per_token):
+                tasks.append(send_single_visit(session, url, token, data))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        total_sent = len(tasks)
+        for success, response in results:
+            if success and response is not None:
+                total_success += 1
+                if first_success_response is None:
+                    first_success_response = response
+                    player_info = parse_protobuf_response(response)
+
+        visit_process.append(f"{total_success}")
+        print(f"Batch sent: {total_sent}, Success: {total_success}")
+
+    end_time = time.time()
+    total_time = str(timedelta(seconds=int(end_time - start_time)))
+    return total_success, total_sent, player_info, visit_process[0], total_time
+
 @app.route('/visit', methods=['GET'])
-def handle_visits():
+async def handle_visits():
     global api_requests_made
     uid = request.args.get("uid")
     server_name = request.args.get("region", "").upper()
@@ -189,11 +178,9 @@ def handle_visits():
         return jsonify({"error": "API request limit exceeded"}), 429
 
     try:
-        def process_request():
+        async def process_request():
             # Fetch tokens synchronously for initial info
-            with open('tokens.json', 'r') as file:
-                tokens_data = json.load(file)
-            tokens_list = tokens_data.get("tokens", [])
+            tokens_list = fetch_all_tokens()
             if not tokens_list:
                 raise Exception("No tokens received from tokens.json.")
             token = tokens_list[0]
@@ -203,26 +190,24 @@ def handle_visits():
                 raise Exception("Encryption of UID failed.")
 
             # Get player info before visits
-            before_info = get_player_info(encrypted_uid, server_name, token)
-            if before_info is None:
-                raise Exception("Failed to retrieve initial player info.")
-            before_visits = before_info.get("likes", 0)  # Assuming likes field represents visits
+            async with aiohttp.ClientSession() as session:
+                before_info = await get_player_info(session, encrypted_uid, server_name, token)
+                if before_info is None:
+                    raise Exception("Failed to retrieve initial player info.")
+                before_visits = before_info.get("likes", 0)
 
-            # Fetch 100 tokens for sending visits
-            tokens = asyncio.run(fetch_all_tokens())
-            if not tokens or len(tokens) < 100:
-                raise Exception(f"Failed to fetch 100 tokens, got {len(tokens) if tokens else 0}.")
+                # Fetch tokens for sending visits
+                tokens = fetch_all_tokens()
+                if not tokens or len(tokens) < 100:
+                    raise Exception(f"Failed to fetch 100 tokens, got {len(tokens) if tokens else 0}.")
 
-            # Send 1000 visits
-            total_success, total_sent, player_info, visit_process, total_time = asyncio.run(
-                send_visits_in_batches(uid, server_name, tokens, target_visits=1000)
-            )
+                # Send 1000 visits
+                total_success, total_sent, player_info, visit_process, total_time = await send_visits_in_batches(
+                    uid, server_name, tokens, target_visits=1000
+                )
 
-            # Get player info after visits
-            after_info = get_player_info(encrypted_uid, server_name, token)
-            if after_info is None:
-                raise Exception("Failed to retrieve player info after visits.")
-            after_visits = after_info.get("likes", 0)  # Assuming likes field represents visits
+                # Use player_info from visits to avoid redundant call
+                after_visits = player_info.get("likes", 0) if player_info else before_visits
 
             visits_given = after_visits - before_visits
             status = 1 if visits_given > 0 else 2
@@ -249,11 +234,11 @@ def handle_visits():
             }
             return result
 
-        result = process_request()
+        result = await process_request()
         return jsonify(result)
     except Exception as e:
         app.logger.error(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
