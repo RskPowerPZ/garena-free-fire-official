@@ -51,7 +51,7 @@ async def fetch_all_tokens():
         "https://free-fire-india-five.vercel.app/token",
         "https://free-fire-india-four.vercel.app/token",
         "https://free-fire-india-tthree.vercel.app/token",
-        "https://free-fire-india-two.vercel.app/token"
+        "team-x-rahul-jwt.vercel.app/token"
     ]
     all_tokens = []
     try:
