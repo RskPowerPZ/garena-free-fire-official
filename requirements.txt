@@ -1,5 +1,5 @@
-flask==2.0.1
-aiohttp==3.8.1
-aiofiles==0.8.0
-pycryptodome==3.15.0
-python-dotenv==0.20.0
+flask
+aiohttp
+pycryptodome
+python-dotenv
+aiofiles
