@@ -194,5 +194,4 @@ def visit():
 if __name__ == '__main__':
     scheduler_thread = threading.Thread(target=update_tokens, daemon=True)
     scheduler_thread.start()
-
     app.run(debug=True, use_reloader=False)
