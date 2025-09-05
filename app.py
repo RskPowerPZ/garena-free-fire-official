@@ -78,7 +78,7 @@ def make_request_threaded(encrypt, region, token, session, results, index):
             'Expect': "100-continue",
             'X-Unity-Version': "2018.4.11f1",
             'X-GA': "v1 1",
-            'ReleaseVersion': "OB(50"
+            'ReleaseVersion': "OB50"
         }
         
         response = session.post(url, data=edata, headers=headers, verify=False, timeout=5)
@@ -194,4 +194,5 @@ def visit():
 if __name__ == '__main__':
     scheduler_thread = threading.Thread(target=update_tokens, daemon=True)
     scheduler_thread.start()
+
     app.run(debug=True, use_reloader=False)
