@@ -3,14 +3,13 @@ import json
 import binascii
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-import aiohttp
-import asyncio
 import urllib3
 from datetime import datetime, timedelta
 import os
 import threading
 from functools import lru_cache
 import time
+import requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from google.protobuf.json_format import MessageToJson
 import uid_generator_pb2
@@ -82,12 +81,12 @@ def make_request_threaded(encrypt, region, token, session, results, index):
             'ReleaseVersion': "OB(50"
         }
         
-        with session.post(url, data=edata, headers=headers, ssl=False, timeout=5) as response:
-            if response.status != 200:
-                results[index] = None
-            else:
-                binary = response.read()
-                results[index] = decode_protobuf(binary)
+        response = session.post(url, data=edata, headers=headers, verify=False, timeout=5)
+        if response.status_code != 200:
+            results[index] = None
+        else:
+            binary = response.content
+            results[index] = decode_protobuf(binary)
     except Exception as e:
         results[index] = None
 
@@ -99,8 +98,41 @@ def decode_protobuf(binary):
     except Exception as e:
         return None
 
+def update_tokens():
+    while True:
+        try:
+            with open('accs.txt', 'r') as f:
+                lines = f.readlines()
+            new_tokens = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    uid, password = line.split(':')
+                    url = f"https://100067.vercel.app/token?uid={uid}&password={password}"
+                    resp = requests.get(url, verify=False, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        token = data.get('token')
+                        if token:
+                            new_tokens.append({'token': token})
+                    else:
+                        print(f"Failed for {uid}: status {resp.status_code}")
+                except Exception as e:
+                    print(f"Error for {uid}: {e}")
+            if new_tokens:
+                with open('token_ind.json', 'w') as f:
+                    json.dump(new_tokens, f)
+                print("Tokens updated.")
+            else:
+                print("No tokens updated.")
+        except Exception as e:
+            print(f"Scheduler error: {e}")
+        time.sleep(7 * 3600)  # 7 hours
+
 @app.route('/visit', methods=['GET'])
-async def visit():
+def visit():
     target_uid = request.args.get("uid")
     region = request.args.get("region", "").upper()
     
@@ -122,7 +154,7 @@ async def visit():
         player_name = None
         total_responses = []
         
-        async with aiohttp.ClientSession() as session:
+        with requests.Session() as session:
             results = [None] * (len(tokens) * 20)
             threads = []
             for i, token in enumerate(tokens):
@@ -160,4 +192,6 @@ async def visit():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
+    scheduler_thread = threading.Thread(target=update_tokens, daemon=True)
+    scheduler_thread.start()
     app.run(debug=True, use_reloader=False)
