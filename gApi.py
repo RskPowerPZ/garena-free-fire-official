@@ -210,8 +210,8 @@ def Major_Regsiter(access_token , open_id , field , uid , password,region):
     payload = E_AEs(payload).hex()
     body = bytes.fromhex(payload)
     proxies = {
-        "http": "socks4://198.145.133.90:1080",
-        "https": "socks4://188.78.49.5:57325",
+        "http": "http://198.145.133.90:1080",
+        "https": "http://188.78.49.5:57325",
     }
 
     response = requests.post(url, headers=headers, data=body,verify=False)
