@@ -2,15 +2,13 @@
   "version": 2,
   "builds": [
     {
-      "src": "wsgi.py",
-      "use": "@vercel/python"
+      "src": "app.py",
+      "use": "@vercel/python",
+      "config": { "maxLambdaSize": "50mb" }
     }
   ],
   "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "wsgi.py"
-    }
+    { "src": "/(.*)", "dest": "gApi.py" }
   ],
   "regions": ["bom1"]
 }
