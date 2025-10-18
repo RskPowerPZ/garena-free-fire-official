@@ -2,13 +2,14 @@
   "version": 2,
   "builds": [
     {
-      "src": "app.py",
-      "use": "@vercel/python",
-      "config": { "maxLambdaSize": "50mb" }
+      "src": "ItemIcon.py",
+      "use": "@vercel/python"
     }
   ],
   "routes": [
-    { "src": "/(.*)", "dest": "gApi.py" }
-  ],
-  "regions": ["bom1"]
+    {
+      "src": "/(.*)",
+      "dest": "ItemIcon.py"
+    }
+  ]
 }
